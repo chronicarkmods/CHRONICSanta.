@@ -18,11 +18,7 @@ async def on_ready():
 async def ping(ctx):
     await ctx.send("Pong!")
 
-# Run bot
-def run_bot():
-    bot.run(os.getenv("DISCORD_TOKEN"))
-
-# Web server (keeps bot alive)
+# Web server (for Railway uptime)
 app = Flask('')
 
 @app.route('/')
@@ -32,5 +28,8 @@ def home():
 def run_web():
     app.run(host='0.0.0.0', port=8080)
 
+# Start web server in background
 Thread(target=run_web).start()
-Thread(target=run_bot).start()
+
+# ✅ RUN BOT IN MAIN THREAD (THIS FIXES YOUR ERROR)
+bot.run(os.getenv("DISCORD_TOKEN"))
