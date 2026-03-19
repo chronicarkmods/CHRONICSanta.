@@ -1,4 +1,4 @@
 discord.py
 flask
 gamercon-async
-
+python-dotenv
