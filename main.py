@@ -1,23 +1,21 @@
-# main.py
+# bot.py
 import discord
 from discord.ext import commands, tasks
 import asyncio
 import os
-import ftplib
 import json
 import re
 from dotenv import load_dotenv
 from datetime import datetime
+from mcrcon import MCRcon
 
 # -------------------------
 # LOAD ENV VARIABLES
 # -------------------------
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-FTP_HOST = os.getenv("FTP_HOST")
-FTP_USER = os.getenv("FTP_USER")
-FTP_PASS = os.getenv("FTP_PASS")
-FTP_PATH = os.getenv("FTP_PATH")
+RCON_PASS = os.getenv("RCON_PASS")
+RCON_SERVERS = os.getenv("RCON_SERVERS").split(",")  # format: IP:PORT,IP:PORT,...
 
 # -------------------------
 # BOT SETUP
@@ -43,24 +41,20 @@ def save_data(data):
         json.dump(data, f, indent=4)
 
 # -------------------------
-# FETCH LOG FILES FROM FTP
+# RCON CONNECTIONS
 # -------------------------
-def fetch_logs():
-    ftp = ftplib.FTP(FTP_HOST)
-    ftp.login(FTP_USER, FTP_PASS)
-    ftp.cwd(FTP_PATH)
-
-    files = ftp.nlst()
-    log_files = [f for f in files if f.lower().endswith(".log")]
-
-    log_data = {}
-    for log_file in log_files:
-        lines = []
-        ftp.retrlines(f"RETR {log_file}", lines.append)
-        log_data[log_file] = lines
-
-    ftp.quit()
-    return log_data
+def get_rcon_connections():
+    connections = {}
+    for s in RCON_SERVERS:
+        ip, port = s.split(":")
+        conn = MCRcon(ip, RCON_PASS, port=int(port))
+        try:
+            conn.connect()
+            connections[s] = conn
+        except Exception as e:
+            print(f"Failed RCON connection {s}: {e}")
+            connections[s] = None
+    return connections
 
 # -------------------------
 # PARSE EVENTS
@@ -101,15 +95,12 @@ async def register(ctx, *, tribe_name):
     data = load_data()
     guild = ctx.guild
 
-    # prevent duplicate tribe
     if tribe_name in data["tribes"]:
         await ctx.send(f"⚠️ Tribe {tribe_name} is already registered!")
         return
 
     # create role
     role = await guild.create_role(name=tribe_name)
-
-    # give role to user
     await ctx.author.add_roles(role)
 
     # create private channel
@@ -118,7 +109,6 @@ async def register(ctx, *, tribe_name):
         role: discord.PermissionOverwrite(read_messages=True),
         guild.me: discord.PermissionOverwrite(read_messages=True)
     }
-
     channel = await guild.create_text_channel(
         name=f"{tribe_name}-logs",
         overwrites=overwrites
@@ -178,57 +168,65 @@ async def check(ctx):
     await ctx.send(f"Registered tribes: {tribe_list}")
 
 # -------------------------
-# LOG MONITORING
+# RCON CONNECTION CHECK
+# -------------------------
+@bot.command()
+async def rconcheck(ctx):
+    connections = get_rcon_connections()
+    success = [s for s, c in connections.items() if c is not None]
+    fail = [s for s, c in connections.items() if c is None]
+    await ctx.send(f"✅ Connected: {', '.join(success) if success else 'None'}\n❌ Failed: {', '.join(fail) if fail else 'None'}")
+
+# -------------------------
+# MONITOR LOGS VIA RCON
 # -------------------------
 async def monitor_logs():
     await bot.wait_until_ready()
     data = load_data()
-    guild = bot.guilds[0]
+    guild = bot.guilds[0]  # assumes bot is in one server
 
     while True:
         try:
-            all_logs = fetch_logs()
+            connections = get_rcon_connections()
+            for server_name, conn in connections.items():
+                if conn is None:
+                    continue
+                # Example command to get logs from ARK server
+                try:
+                    logs = conn.command("GetLogs")  # Replace with actual RCON log command if needed
+                    for line in logs.splitlines():
+                        event = parse_event(line)
+                        if not event:
+                            continue
 
-            for log_file, lines in all_logs.items():
-                last_line = data["maps"].get(log_file, 0)
-                new_lines = lines[last_line:]
+                        tribe = extract_tribe(line)
+                        if not tribe or tribe not in data["tribes"]:
+                            continue
+                        if data["tribes"][tribe].get("paused"):
+                            continue
 
-                for line in new_lines:
-                    event = parse_event(line)
-                    if not event:
-                        continue
+                        offline = is_offline(data, tribe)
+                        update_activity(data, tribe)
 
-                    tribe = extract_tribe(line)
-                    if not tribe or tribe not in data["tribes"]:
-                        continue
-
-                    # skip paused tribes
-                    if data["tribes"][tribe].get("paused"):
-                        continue
-
-                    offline = is_offline(data, tribe)
-                    update_activity(data, tribe)
-
-                    channel_id = data["tribes"][tribe]["channel_id"]
-                    channel = bot.get_channel(channel_id)
-                    if channel:
-                        embed = discord.Embed(
-                            title="🚨 OFFLINE RAID" if offline else "⚔️ Raid Activity",
-                            description=line,
-                            color=0xff0000 if offline else 0xffaa00,
-                            timestamp=datetime.utcnow()
-                        )
-                        embed.add_field(name="Event", value=event, inline=False)
-                        await channel.send(embed=embed)
-
-                data["maps"][log_file] = len(lines)
-
-            save_data(data)
+                        channel_id = data["tribes"][tribe]["channel_id"]
+                        channel = bot.get_channel(channel_id)
+                        if channel:
+                            embed = discord.Embed(
+                                title="🚨 OFFLINE RAID" if offline else "⚔️ Raid Activity",
+                                description=line,
+                                color=0xff0000 if offline else 0xffaa00,
+                                timestamp=datetime.utcnow()
+                            )
+                            embed.add_field(name="Event", value=event, inline=False)
+                            await channel.send(embed=embed)
+                except Exception as e:
+                    print(f"RCON command failed on {server_name}: {e}")
 
         except Exception as e:
-            print("Error:", e)
+            print("Monitor error:", e)
 
-        await asyncio.sleep(30)
+        save_data(data)
+        await asyncio.sleep(30)  # repeat every 30 sec
 
 # -------------------------
 # ON READY
