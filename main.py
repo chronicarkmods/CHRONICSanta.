@@ -5,7 +5,7 @@ import discord
 
 # --- ENVIRONMENT VARIABLES ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-RCON_SERVERS = os.getenv("RCON_SERVERS", "")  # Example: IP1:PORT1,IP2:PORT2,...,IP9:PORT9
+servers = RCON_SERVERS.split(",") if RCON_SERVERS else []  # Example: IP1:PORT1,IP2:PORT2,...,IP9:PORT9
 ADMIN_PASS = os.getenv("RCON_PASSWORD")       # Admin password for all servers
 DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))  # Channel where logs will go
 
